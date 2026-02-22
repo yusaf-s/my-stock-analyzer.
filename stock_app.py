@@ -27,16 +27,21 @@ df['RSI'] = ta.rsi(df['Close'], length=14)
 bb = ta.bbands(df['Close'], length=20, std=2)
 df = pd.concat([df, bb], axis=1)
 
-# 4. Signal Logic
+# 4. Signal Logic (Safer Version)
 def get_signal(row):
-    if row['Close'] < row['BBL_20_2.0'] and row['RSI'] < 35:
+    # This automatically finds the right column name even if it changes
+    lower_band = row.get('BBL_20_2.0', row.get('BBL_20_2'))
+    upper_band = row.get('BBU_20_2.0', row.get('BBU_20_2'))
+    
+    if lower_band and row['Close'] < lower_band and row['RSI'] < 35:
         return "BUY (Oversold Dip)"
-    elif row['Close'] > row['BBU_20_2.0'] and row['RSI'] > 70:
+    elif upper_band and row['Close'] > upper_band and row['RSI'] > 70:
         return "SELL (Overbought Peak)"
     else:
         return "NEUTRAL"
 
 df['Signal'] = df.apply(get_signal, axis=1)
+
 
 # 5. Professional Visualization
 fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
