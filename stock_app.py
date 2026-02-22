@@ -111,4 +111,3 @@ else:
         conf = "HIGH" if last_row['Volume'] > last_row['Vol_SMA'] else "LOW"
         if last_row['Buy_S']: st.success(f"🚀 BUY SIGNAL | Confidence: {conf}")
         elif last_row['Sell_S']: st.error(f"⚠️ SELL SIGNAL | Confidence: {conf}")
-    
