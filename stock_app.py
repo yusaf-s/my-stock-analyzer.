@@ -25,7 +25,7 @@ df['SMA50'] = ta.sma(df['Close'], length=50)
 df['SMA200'] = ta.sma(df['Close'], length=200)
 df['RSI'] = ta.rsi(df['Close'], length=14)
 bb = ta.bbands(df['Close'], length=20, std=2)
-df = pd.concat([df, bb], axis=1)
+df = pd.concat([df, bb], axis=1).copy()
 
 # 4. Signal Logic (Safer Version)
 def get_signal(row):
