@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -50,10 +51,10 @@ else:
     df['RSI'] = ta.rsi(df['Close'], length=14)
     df['Vol_SMA'] = ta.sma(df['Volume'], length=20)
 
-    # Prediction (10-bar regression)
+    # Prediction (10-bar regression) - predicts NEXT bar
     y_vals, x_vals = df['Close'].tail(10).values, np.arange(10)
     slope, intercept = np.polyfit(x_vals, y_vals, 1)
-    prediction = slope * 11 + intercept
+    prediction = slope * 11 + intercept  # bar 11 = one step into future
 
     # Bollinger Bands & Signals
     bb = ta.bbands(df['Close'], length=20, std=1.5)
@@ -97,9 +98,21 @@ else:
                                  textfont=dict(color="red", size=10),
                                  marker=dict(symbol='triangle-down', color='red', size=22), name='SELL'), row=1, col=1)
 
-    # Prediction Star
-    fig.add_trace(go.Scatter(x=[df.index[-1]], y=[prediction], mode='markers',
-                             marker=dict(symbol='star', size=18, color='yellow'), name='Pred Open'), row=1, col=1)
+    # --- Prediction Star at FUTURE time ---
+    last_time = df.index[-1]
+    time_delta = df.index[-1] - df.index[-2]
+    future_time = last_time + time_delta
+
+    fig.add_trace(go.Scatter(
+        x=[future_time],
+        y=[prediction],
+        mode='markers+text',
+        text=[f"  ₹{prediction:.2f}"],
+        textposition="middle right",
+        textfont=dict(color="yellow", size=11),
+        marker=dict(symbol='star', size=18, color='yellow'),
+        name='Predicted Next'
+    ), row=1, col=1)
 
     # Volume + BOLD CYAN Line
     vol_colors = ['#26a69a' if df['Open'].iloc[i] < df['Close'].iloc[i] else '#ef5350' for i in range(len(df))]
@@ -131,7 +144,7 @@ else:
 
     with c2:
         change_pct = ((prediction / last_row['Close']) - 1) * 100
-        st.metric("Predicted Target", f"₹{prediction:.2f}", f"{change_pct:.2f}%")
+        st.metric("Predicted Next Bar", f"₹{prediction:.2f}", f"{change_pct:.2f}% vs current")
 
     with c3:
         st.markdown("**Signal Volume Breakdown**")
