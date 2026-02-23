@@ -12,14 +12,17 @@ import time
 # --- CONFIG ---
 st.set_page_config(layout="wide", page_title="India Alpha: Silverline Ultimate")
 
-# --- AUTO-REFRESH (30 Seconds) ---
+# --- AUTO-REFRESH CONFIG ---
 refresh_rate = 30
 
 # 1. Header
 IST = pytz.timezone('Asia/Kolkata')
 current_time = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
 st.title("🚀 India Alpha: Silverline Ultimate Tracker")
-st.write(f"🕒 **Last Update (IST):** {current_time} | *Refreshing every {refresh_rate}s*")
+
+# Create a placeholder for the countdown timer
+timer_placeholder = st.empty()
+st.write(f"🕒 **Last Update (IST):** {current_time}")
 
 # 2. Sidebar
 symbol = st.sidebar.text_input("Ticker", "silverline.BO")
@@ -29,7 +32,6 @@ period = st.sidebar.selectbox("Horizon", ["1d", "5d", "1mo", "1y"], index=0)
 def get_live_data(ticker, pd_val):
     interval_map = {"1d": "1m", "5d": "5m", "1mo": "1d", "1y": "1d"}
     try:
-        # progress=False handles the new yfinance threading behavior
         data = yf.download(ticker, period=pd_val, interval=interval_map[pd_val], progress=False)
         if pd_val == "1d" and (data is None or len(data) < 5):
             data = yf.download(ticker, period="4d", interval="1m", progress=False)
@@ -46,13 +48,13 @@ df = get_live_data(symbol, period)
 
 if df is None or len(df) < 15:
     st.error("❌ Waiting for market data... Retrying soon.")
+    time.sleep(5)
+    st.rerun()
 else:
     # --- 4. CALCULATIONS ---
     df['RSI'] = ta.rsi(df['Close'], length=14)
     df['Vol_SMA'] = ta.sma(df['Volume'], length=20)
 
-    # Buy/Sell Volume Calculation (Volume Partitioning)
-    # Epsilon prevents division by zero on flat candles
     epsilon = 0.00001
     df['Range'] = (df['High'] - df['Low']) + epsilon
     df['Buy_Vol'] = df['Volume'] * (df['Close'] - df['Low']) / df['Range']
@@ -61,8 +63,6 @@ else:
     current_buy_vol = float(df['Buy_Vol'].iloc[-1])
     current_sell_vol = float(df['Sell_Vol'].iloc[-1])
 
-    # Prediction Logic (Linear Regression)
-    # Ensure 1D array for polyfit
     y_vals = df['Close'].tail(10).values.flatten()
     x_vals = np.arange(10)
     slope, intercept = np.polyfit(x_vals, y_vals, 1)
@@ -76,11 +76,9 @@ else:
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
                         vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
 
-    # Main Price Chart
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'],
                                  low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
 
-    # Prediction Star
     last_time = df.index[-1]
     last_rsi = df['RSI'].iloc[-1]
     star_color = "red" if last_rsi > 85 else "yellow"
@@ -94,11 +92,9 @@ else:
         name='Target'
     ), row=1, col=1)
 
-    # Volume Breakdown Chart (Stacked)
     fig.add_trace(go.Bar(x=df.index, y=df['Buy_Vol'], name='Buy Vol', marker_color='#26a69a'), row=2, col=1)
     fig.add_trace(go.Bar(x=df.index, y=df['Sell_Vol'], name='Sell Vol', marker_color='#ef5350'), row=2, col=1)
     
-    # RSI Chart
     fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='magenta', width=2), name='RSI'), row=3, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
@@ -110,7 +106,6 @@ else:
     c1, c2, c3, c4 = st.columns(4)
     
     with c1:
-        # SUB-COLUMNS for horizontal Price and Target
         sc1, sc2 = st.columns(2)
         with sc1:
             st.metric("Live Price", f"₹{last_close:.2f}")
@@ -129,10 +124,13 @@ else:
         st.metric("Sell Vol", f"{s_pct:.1f}%", f"-{current_sell_vol:,.0f}", delta_color="inverse")
         
     with c4:
-        conf = "🚀 STRONG VOL" if df['Volume'].iloc[-1] > df['Vol_SMA'].iloc[-1] else "😴 LOW VOL"
-        st.info(f"Signal: {conf}")
-        if last_rsi > 80: st.warning("⚠️ OVERBOUGHT")
+        vol_state = "🚀 STRONG VOL" if df['Volume'].iloc[-1] > df['Vol_SMA'].iloc[-1] else "😴 LOW VOL"
+        st.info(f"Signal: {vol_state}")
 
-    time.sleep(refresh_rate)
+    # --- 7. COUNTDOWN TIMER LOGIC ---
+    for i in range(refresh_rate, -1, -1):
+        timer_placeholder.markdown(f"⏳ **Next Refresh in:** `{i}s`")
+        time.sleep(1)
+        
     st.rerun()
-            
+    
