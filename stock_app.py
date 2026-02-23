@@ -50,34 +50,23 @@ else:
     df['RSI'] = ta.rsi(df['Close'], length=14)
     df['Vol_SMA'] = ta.sma(df['Volume'], length=20)
 
-    # Prediction Logic with Market Constraints (5% Circuit)
-    y_vals, x_vals = df['Close'].tail(10).values, np.arange(10)
-    slope, intercept = np.polyfit(x_vals, y_vals, 1)
+    # NEW: Buy/Sell Volume Logic (Intraday Pressure)
+    # Uses the position of the Close relative to the High/Low range
+    df['Range'] = (df['High'] - df['Low']).replace(0, 0.001) # Avoid division by zero
+    df['Buy_Vol'] = df['Volume'] * (df['Close'] - df['Low']) / df['Range']
+    df['Sell_Vol'] = df['Volume'] * (df['High'] - df['Close']) / df['Range']
     
-    # Mathematical Target
+    current_buy_vol = df['Buy_Vol'].iloc[-1]
+    current_sell_vol = df['Sell_Vol'].iloc[-1]
+
+    # Prediction Logic
+    y_vals, x_vals = df['Close'].tail(10).values.flatten(), np.arange(10)
+    slope, intercept = np.polyfit(x_vals, y_vals, 1)
     raw_prediction = slope * 11 + intercept 
     
-    # Circuit Limit Correction (Silverline is 5%)
     last_close = float(df['Close'].iloc[-1])
     upper_circuit = round(last_close * 1.05, 2)
-    
-    # Final Prediction: Use math but cap it at the legal circuit limit
     prediction = min(raw_prediction, upper_circuit)
-
-    # Bollinger Bands & Signals
-    bb = ta.bbands(df['Close'], length=20, std=1.5)
-    if bb is not None:
-        df = pd.concat([df, bb], axis=1)
-        l_col = [c for c in df.columns if 'BBL' in c][0]
-        u_col = [c for c in df.columns if 'BBU' in c][0]
-        df['Buy_S'] = (df['Close'] <= df[l_col]) & (df['RSI'] < 45)
-        df['Sell_S'] = (df['Close'] >= df[u_col]) & (df['RSI'] > 55)
-
-    # Aggregate volumes for signals
-    buys = df[df['Buy_S']].copy()
-    sells = df[df['Sell_S']].copy()
-    total_buy_vol  = int(buys['Volume'].sum()) if not buys.empty else 0
-    total_sell_vol = int(sells['Volume'].sum()) if not sells.empty else 0
 
     # --- 5. CHARTING ---
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
@@ -86,51 +75,38 @@ else:
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'],
                                  low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
 
-    # Prediction Star at Future Time
+    # Prediction Star
     last_time = df.index[-1]
-    time_delta = df.index[-1] - df.index[-2]
-    future_time = last_time + time_delta
+    star_color = "red" if df['RSI'].iloc[-1] > 85 else "yellow"
+    fig.add_trace(go.Scatter(x=[last_time], y=[prediction], mode='markers+text',
+        text=[f" Target: ₹{prediction:.2f}"], textposition="middle right",
+        marker=dict(symbol='star', size=15, color=star_color), name='Target'), row=1, col=1)
 
-    # Color Star Red if RSI is dangerously high (Fakeout Alert)
-    last_rsi = df['RSI'].iloc[-1]
-    star_color = "red" if last_rsi > 85 else "yellow"
-
-    fig.add_trace(go.Scatter(
-        x=[future_time], y=[prediction],
-        mode='markers+text',
-        text=[f"  Target: ₹{prediction:.2f}"],
-        textposition="middle right",
-        textfont=dict(color=star_color, size=12, family="Arial Black"),
-        marker=dict(symbol='star', size=20, color=star_color, line=dict(width=2, color="white")),
-        name='Predicted Next'
-    ), row=1, col=1)
-
-    # Volume & RSI
-    vol_colors = ['#26a69a' if df['Open'].iloc[i] < df['Close'].iloc[i] else '#ef5350' for i in range(len(df))]
-    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name='Volume'), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['Vol_SMA'], line=dict(color='cyan', width=2), name='Vol Avg'), row=2, col=1)
+    # Volume Chart (Stacked Buy/Sell)
+    fig.add_trace(go.Bar(x=df.index, y=df['Buy_Vol'], name='Buy Vol', marker_color='#26a69a'), row=2, col=1)
+    fig.add_trace(go.Bar(x=df.index, y=df['Sell_Vol'], name='Sell Vol', marker_color='#ef5350'), row=2, col=1)
+    
+    # RSI Chart
     fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='magenta', width=2)), row=3, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
 
-    fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=False)
+    fig.update_layout(height=700, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='stack')
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- 6. DASHBOARD ---
+    # --- 6. DASHBOARD METRICS ---
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.metric("Live Price", f"₹{last_close:.2f}")
-        st.write(f"RSI: {last_rsi:.1f}")
+        st.write(f"RSI: {df['RSI'].iloc[-1]:.1f}")
     with c2:
-        change = ((prediction / last_close) - 1) * 100
-        st.metric("Target (Next Bar)", f"₹{prediction:.2f}", f"{change:.2f}%")
+        # Show Buy vs Sell Volume for the latest bar
+        total_v = current_buy_vol + current_sell_vol
+        b_pct = (current_buy_vol / total_v * 100) if total_v > 0 else 0
+        st.metric("Buy Pressure", f"{b_pct:.1f}%", f"{current_buy_vol:,.0f} units")
     with c3:
-        if last_rsi > 85:
-            st.warning("⚠️ FAKEOUT RISK: RSI EXTREME")
-        else:
-            st.success("✅ Momentum Stable")
+        s_pct = (current_sell_vol / total_v * 100) if total_v > 0 else 0
+        st.metric("Sell Pressure", f"{s_pct:.1f}%", f"-{current_sell_vol:,.0f}", delta_color="inverse")
     with c4:
-        conf = "STRONG VOL" if df['Volume'].iloc[-1] > df['Vol_SMA'].iloc[-1] else "LOW VOL"
+        conf = "🚀 STRONG VOL" if df['Volume'].iloc[-1] > df['Vol_SMA'].iloc[-1] else "😴 LOW VOL"
         st.info(f"Signal: {conf}")
 
     time.sleep(refresh_rate)
