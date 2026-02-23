@@ -50,10 +50,19 @@ else:
     df['RSI'] = ta.rsi(df['Close'], length=14)
     df['Vol_SMA'] = ta.sma(df['Volume'], length=20)
 
-    # Prediction (10-bar regression) - predicts NEXT bar
+    # Prediction Logic with Market Constraints (5% Circuit)
     y_vals, x_vals = df['Close'].tail(10).values, np.arange(10)
     slope, intercept = np.polyfit(x_vals, y_vals, 1)
-    prediction = slope * 11 + intercept  # bar 11 = one step into future
+    
+    # Mathematical Target
+    raw_prediction = slope * 11 + intercept 
+    
+    # Circuit Limit Correction (Silverline is 5%)
+    last_close = float(df['Close'].iloc[-1])
+    upper_circuit = round(last_close * 1.05, 2)
+    
+    # Final Prediction: Use math but cap it at the legal circuit limit
+    prediction = min(raw_prediction, upper_circuit)
 
     # Bollinger Bands & Signals
     bb = ta.bbands(df['Close'], length=20, std=1.5)
@@ -64,132 +73,65 @@ else:
         df['Buy_S'] = (df['Close'] <= df[l_col]) & (df['RSI'] < 45)
         df['Sell_S'] = (df['Close'] >= df[u_col]) & (df['RSI'] > 55)
 
-    # --- Aggregate signal volumes ---
+    # Aggregate volumes for signals
     buys = df[df['Buy_S']].copy()
     sells = df[df['Sell_S']].copy()
-
-    total_buy_vol  = int(buys['Volume'].sum())  if not buys.empty  else 0
+    total_buy_vol  = int(buys['Volume'].sum()) if not buys.empty else 0
     total_sell_vol = int(sells['Volume'].sum()) if not sells.empty else 0
-    buy_count      = len(buys)
-    sell_count     = len(sells)
 
     # --- 5. CHARTING ---
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
                         vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
 
-    # Main Price Chart
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'],
                                  low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
 
-    # ENHANCED BUY SIGNALS
-    if not buys.empty:
-        buys['label'] = buys.apply(lambda x: "STRONG BUY" if x['Volume'] > x['Vol_SMA'] else "BUY", axis=1)
-        fig.add_trace(go.Scatter(x=buys.index, y=buys['Low']*0.99, mode='markers+text',
-                                 text=buys['label'], textposition="bottom center",
-                                 textfont=dict(color="lime", size=10),
-                                 marker=dict(symbol='triangle-up', color='lime', size=22), name='BUY'), row=1, col=1)
-
-    # ENHANCED SELL SIGNALS
-    if not sells.empty:
-        sells['label'] = sells.apply(lambda x: "STRONG SELL" if x['Volume'] > x['Vol_SMA'] else "SELL", axis=1)
-        fig.add_trace(go.Scatter(x=sells.index, y=sells['High']*1.01, mode='markers+text',
-                                 text=sells['label'], textposition="top center",
-                                 textfont=dict(color="red", size=10),
-                                 marker=dict(symbol='triangle-down', color='red', size=22), name='SELL'), row=1, col=1)
-
-    # --- Prediction Star at FUTURE time ---
+    # Prediction Star at Future Time
     last_time = df.index[-1]
     time_delta = df.index[-1] - df.index[-2]
     future_time = last_time + time_delta
 
+    # Color Star Red if RSI is dangerously high (Fakeout Alert)
+    last_rsi = df['RSI'].iloc[-1]
+    star_color = "red" if last_rsi > 85 else "yellow"
+
     fig.add_trace(go.Scatter(
-        x=[future_time],
-        y=[prediction],
+        x=[future_time], y=[prediction],
         mode='markers+text',
-        text=[f"  ₹{prediction:.2f}"],
+        text=[f"  Target: ₹{prediction:.2f}"],
         textposition="middle right",
-        textfont=dict(color="yellow", size=11),
-        marker=dict(symbol='star', size=18, color='yellow'),
+        textfont=dict(color=star_color, size=12, family="Arial Black"),
+        marker=dict(symbol='star', size=20, color=star_color, line=dict(width=2, color="white")),
         name='Predicted Next'
     ), row=1, col=1)
 
-    # Volume + BOLD CYAN Line
+    # Volume & RSI
     vol_colors = ['#26a69a' if df['Open'].iloc[i] < df['Close'].iloc[i] else '#ef5350' for i in range(len(df))]
     fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name='Volume'), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['Vol_SMA'], line=dict(color='cyan', width=3.5), name='Vol Avg'), row=2, col=1)
-
-    # RSI
+    fig.add_trace(go.Scatter(x=df.index, y=df['Vol_SMA'], line=dict(color='cyan', width=2), name='Vol Avg'), row=2, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='magenta', width=2)), row=3, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
 
-    fig.update_layout(height=850, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=False)
+    fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- 6. FINAL ANALYSIS DASHBOARD ---
-    last_row = df.iloc[-1]
-    st.subheader("Final Trading Analysis")
-
-    def fmt_vol(v):
-        if v >= 1_000_000: return f"{v/1_000_000:.2f}M"
-        if v >= 1_000:     return f"{v/1_000:.1f}K"
-        return str(v)
-
+    # --- 6. DASHBOARD ---
     c1, c2, c3, c4 = st.columns(4)
-
     with c1:
-        st.write(f"**Live Price:** ₹{last_row['Close']:.2f}")
-        st.write(f"**RSI Status:** {last_row['RSI']:.1f}")
-
+        st.metric("Live Price", f"₹{last_close:.2f}")
+        st.write(f"RSI: {last_rsi:.1f}")
     with c2:
-        change_pct = ((prediction / last_row['Close']) - 1) * 100
-        st.metric("Predicted Next Bar", f"₹{prediction:.2f}", f"{change_pct:.2f}% vs current")
-
+        change = ((prediction / last_close) - 1) * 100
+        st.metric("Target (Next Bar)", f"₹{prediction:.2f}", f"{change:.2f}%")
     with c3:
-        st.markdown("**Signal Volume Breakdown**")
-
-        buy_bar_pct = int((total_buy_vol / (total_buy_vol + total_sell_vol) * 100)) if (total_buy_vol + total_sell_vol) > 0 else 0
-        st.markdown(
-            f"""
-            <div style='margin-bottom:6px'>
-              <div style='display:flex; justify-content:space-between; font-size:13px;'>
-                <span style='color:#00e676; font-weight:bold;'>🟢 BUY ({buy_count} signals)</span>
-                <span style='color:#00e676;'>{fmt_vol(total_buy_vol)}</span>
-              </div>
-              <div style='background:#1e1e1e; border-radius:4px; height:14px; width:100%;'>
-                <div style='background:#00e676; height:14px; border-radius:4px; width:{buy_bar_pct}%;'></div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-        sell_bar_pct = 100 - buy_bar_pct
-        st.markdown(
-            f"""
-            <div>
-              <div style='display:flex; justify-content:space-between; font-size:13px;'>
-                <span style='color:#ef5350; font-weight:bold;'>🔴 SELL ({sell_count} signals)</span>
-                <span style='color:#ef5350;'>{fmt_vol(total_sell_vol)}</span>
-              </div>
-              <div style='background:#1e1e1e; border-radius:4px; height:14px; width:100%;'>
-                <div style='background:#ef5350; height:14px; border-radius:4px; width:{sell_bar_pct}%;'></div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-        total_vol = int(df['Volume'].sum())
-        signal_vol = total_buy_vol + total_sell_vol
-        signal_pct = (signal_vol / total_vol * 100) if total_vol > 0 else 0
-        st.caption(f"Signal vol: {fmt_vol(signal_vol)} / Total: {fmt_vol(total_vol)} ({signal_pct:.1f}%)")
-
+        if last_rsi > 85:
+            st.warning("⚠️ FAKEOUT RISK: RSI EXTREME")
+        else:
+            st.success("✅ Momentum Stable")
     with c4:
-        conf = "HIGH CONFIDENCE" if last_row['Volume'] > last_row['Vol_SMA'] else "LOW VOLUME"
-        if last_row['Buy_S']:  st.success(f"BUY | {conf}")
-        elif last_row['Sell_S']: st.error(f"SELL | {conf}")
-        else: st.info(f"NEUTRAL | {conf}")
+        conf = "STRONG VOL" if df['Volume'].iloc[-1] > df['Vol_SMA'].iloc[-1] else "LOW VOL"
+        st.info(f"Signal: {conf}")
 
     time.sleep(refresh_rate)
     st.rerun()
