@@ -11,11 +11,7 @@ import time
 
 # --- 1. CONFIG ---
 st.set_page_config(layout="wide", page_title="India Alpha: Silverline Ultimate")
-
-# --- AUTO-REFRESH CONFIG ---
 refresh_rate = 30
-
-# IST Setup
 IST = pytz.timezone('Asia/Kolkata')
 current_time = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
 
@@ -31,20 +27,14 @@ prediction_mode = st.sidebar.radio("Target Focus", ["Next Candle (Scalp)", "Next
 # --- 3. DATA ENGINES ---
 def get_live_data(ticker, pd_val):
     mapping = {
-        "15m": ("1d", "1m"),
-        "1h":  ("1d", "1m"),
-        "1d":  ("1d", "1m"),
-        "4h":  ("5d", "30m"),
-        "5d":  ("5d", "5m"),
-        "1mo": ("1mo", "1d"),
-        "1y":  ("1y", "1d")
+        "15m": ("1d", "1m"), "1h": ("1d", "1m"), "1d": ("1d", "1m"),
+        "4h": ("5d", "30m"), "5d": ("5d", "5m"), "1mo": ("1mo", "1d"), "1y": ("1y", "1d")
     }
     p, i = mapping[pd_val]
     try:
         data = yf.download(ticker, period=p, interval=i, progress=False)
         if data.empty: return None
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
+        if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
         
         if pd_val == "1h": data = data.tail(60)
         elif pd_val == "15m": data = data.tail(15)
@@ -52,13 +42,21 @@ def get_live_data(ticker, pd_val):
         return data
     except: return None
 
-def get_volume_stats(ticker, period, interval, tail_count):
-    data = yf.download(ticker, period=period, interval=interval, progress=False)
-    if data.empty: return 0, 0
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
+def get_volume_stats(ticker, label):
+    # Mapping for fetching data
+    if label == "4 Hour":
+        # Aggregate 1h data into 4h
+        data = yf.download(ticker, period="5d", interval="1h", progress=False)
+    else:
+        data = yf.download(ticker, period="1d", interval="1m", progress=False)
     
-    df_sub = data.tail(tail_count).copy()
+    if data.empty: return 0, 0
+    if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
+    
+    # Slice the required amount of data
+    counts = {"15 Mins": 15, "30 Mins": 30, "1 Hour": 60, "4 Hour": 4}
+    df_sub = data.tail(counts[label]).copy()
+    
     epsilon = 0.00001
     v_range = (df_sub['High'] - df_sub['Low']) + epsilon
     buy_v = df_sub['Volume'] * (df_sub['Close'] - df_sub['Low']) / v_range
@@ -67,8 +65,7 @@ def get_volume_stats(ticker, period, interval, tail_count):
 
 def predict_tomorrow(ticker):
     hist = yf.download(ticker, period="3mo", interval="1d", progress=False)
-    if isinstance(hist.columns, pd.MultiIndex):
-        hist.columns = hist.columns.get_level_values(0)
+    if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
     closes = hist['Close'].dropna().values.astype(float)
     if len(closes) > 10:
         x = np.arange(len(closes))
@@ -79,108 +76,56 @@ def predict_tomorrow(ticker):
 # --- 4. EXECUTION ---
 df = get_live_data(symbol, period_choice)
 
-if df is None or len(df) < 5:
+if df is None or len(df) < 2:
     st.error(f"❌ Waiting for data/Ticker not found...")
     time.sleep(5)
     st.rerun()
 else:
-    # Calculations for Main Chart
-    rsi_len = 14 if len(df) > 14 else max(1, len(df) - 1)
-    df['RSI'] = ta.rsi(df['Close'], length=rsi_len)
-    
-    epsilon = 0.00001
-    df['Range'] = (df['High'] - df['Low']) + epsilon
-    df['Buy_Vol'] = df['Volume'] * (df['Close'] - df['Low']) / df['Range']
-    df['Sell_Vol'] = df['Volume'] * (df['High'] - df['Close']) / df['Range']
-    
     # --- 5. MULTI-TIMEFRAME VOLUME TABLE ---
     st.subheader("📊 Live Buy/Sell Volume Summary")
-    
-    tf_configs = {
-        "15 Mins": ("1d", "1m", 15),
-        "30 Mins": ("1d", "1m", 30),
-        "1 Hour":  ("1d", "1m", 60)
-    }
-    
     vol_rows = []
-    for label, (p, i, count) in tf_configs.items():
-        b, s = get_volume_stats(symbol, p, i, count)
+    for tf_label in ["15 Mins", "30 Mins", "1 Hour", "4 Hour"]:
+        b, s = get_volume_stats(symbol, tf_label)
         total = b + s
         buy_ratio = (b / total * 100) if total > 0 else 50
         sell_ratio = 100 - buy_ratio
-        
         vol_rows.append({
-            "Timeframe": label,
+            "Timeframe": tf_label,
             "Buy Volume": f"{b:,.0f}",
             "Sell Volume": f"{s:,.0f}",
             "Buy %": f"🟢 {buy_ratio:.1f}%",
             "Sell %": f"🔴 {sell_ratio:.1f}%",
             "Net Flow": f"{'✅' if b > s else '⚠️'} {(b-s):,.0f}"
         })
-    
-    # Display table with full width
     st.table(pd.DataFrame(vol_rows))
 
-    # --- 6. TARGET CALCULATIONS ---
+    # --- 6. TARGETS & CHARTING ---
     last_close = float(df['Close'].iloc[-1])
-    if prediction_mode == "Next Day (Tomorrow)":
-        target_val = predict_tomorrow(symbol)
-        target_label = "Tomorrow's Target"
-    else:
-        recent_prices = df['Close'].tail(15).dropna().values.astype(float)
-        x_vals = np.arange(len(recent_prices))
-        slope, intercept = np.polyfit(x_vals, recent_prices, 1)
-        target_val = slope * (len(recent_prices) + 1) + intercept
-        target_label = "Scalp Target"
-
-    prediction = np.clip(target_val, last_close * 0.95, last_close * 1.05) if target_val else last_close
-
-    # --- 7. CHARTING ---
+    target_val = predict_tomorrow(symbol) if prediction_mode == "Next Day (Tomorrow)" else None
+    if not target_val:
+        recent = df['Close'].tail(15).dropna().values.astype(float)
+        slope, intercept = np.polyfit(np.arange(len(recent)), recent, 1)
+        target_val = slope * (len(recent) + 1) + intercept
+    
+    prediction = np.clip(target_val, last_close * 0.95, last_close * 1.05)
+    
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
+    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color='gray', opacity=0.3), row=2, col=1)
     
-    fig.add_trace(go.Scatter(
-        x=[df.index[-1]], y=[prediction], mode='markers+text',
-        text=[f"  {target_label}: ₹{prediction:.2f}"], textposition="middle right",
-        marker=dict(symbol='star', size=18, color="cyan" if prediction_mode == "Next Day (Tomorrow)" else "yellow", line=dict(width=1, color="white")),
-        name='Target'
-    ), row=1, col=1)
-
-    fig.add_trace(go.Bar(x=df.index, y=df['Buy_Vol'], name='Buy Vol', marker_color='#26a69a'), row=2, col=1)
-    fig.add_trace(go.Bar(x=df.index, y=df['Sell_Vol'], name='Sell Vol', marker_color='#ef5350'), row=2, col=1)
+    rsi_len = 14 if len(df) > 14 else max(1, len(df)-1)
+    df['RSI'] = ta.rsi(df['Close'], length=rsi_len)
     fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='magenta', width=2), name='RSI'), row=3, col=1)
     
-    fig.update_layout(height=700, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='stack', showlegend=False)
+    fig.update_layout(height=600, template="plotly_dark", xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- 8. FOOTER METRICS ---
-    total_period_buy = df['Buy_Vol'].sum()
-    total_period_sell = df['Sell_Vol'].sum()
-    total_vol = total_period_buy + total_period_sell
-    buy_pct_total = (total_period_buy / total_vol * 100) if total_vol > 0 else 50
-    sell_pct_total = 100 - buy_pct_total
+    # --- 7. FOOTER METRICS ---
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Live Price", f"₹{last_close:.2f}")
+    c2.metric("Target", f"₹{prediction:.2f}", f"{((prediction/last_close)-1)*100:+.2f}%")
+    c3.info(f"RSI: {df['RSI'].iloc[-1]:.1f}")
 
-    st.markdown(f"### 📊 Overall Period Sentiment")
-    st.markdown(f"""
-    <div style="width: 100%; background-color: #444; border-radius: 8px; display: flex; height: 35px; overflow: hidden;">
-        <div style="width: {buy_pct_total}%; background-color: #26a69a; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold;">{buy_pct_total:.1f}% BUY</div>
-        <div style="width: {sell_pct_total}%; background-color: #ef5350; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold;">{sell_pct_total:.1f}% SELL</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("Live Price", f"₹{last_close:.2f}")
-        st.metric(target_label, f"₹{prediction:.2f}", f"{((prediction/last_close)-1)*100:+.2f}%")
-    with c2:
-        st.metric("Total Buy Vol", f"{total_period_buy:,.0f}")
-    with c3:
-        st.metric("Total Sell Vol", f"-{total_period_sell:,.0f}", delta_color="inverse")
-    with c4:
-        rsi_val = df['RSI'].iloc[-1]
-        st.info(f"Current RSI: {rsi_val:.1f}")
-
-    # Auto-refresh Timer logic
     for i in range(refresh_rate, -1, -1):
         timer_placeholder.markdown(f"⏳ **Refresh in:** `{i}s`")
         time.sleep(1)
