@@ -15,7 +15,7 @@ st.set_page_config(layout="wide", page_title="India Alpha: Silverline Ultimate")
 # --- AUTO-REFRESH CONFIG ---
 refresh_rate = 30
 
-# 1. Header
+# 1. Header & Time
 IST = pytz.timezone('Asia/Kolkata')
 current_time = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
 st.title("🚀 India Alpha: Silverline Ultimate Tracker")
@@ -23,30 +23,41 @@ st.title("🚀 India Alpha: Silverline Ultimate Tracker")
 timer_placeholder = st.empty()
 st.write(f"🕒 **Last Update (IST):** {current_time}")
 
-# 2. Sidebar
+# 2. Sidebar - Added 15m, 1h, 4h
 symbol = st.sidebar.text_input("Ticker", "silverline.BO")
-period = st.sidebar.selectbox("Horizon", ["1d", "5d", "1mo", "1y"], index=0)
+# Mapping Horizon to yfinance Interval
+horizon_options = {
+    "1d (1m)": ("1d", "1m"),
+    "15 mins": ("1d", "15m"),
+    "1 hour": ("5d", "60m"),
+    "4 hours": ("7d", "90m"), # yfinance uses 90m or we resample, but 1h/1d are standard
+    "5 days (5m)": ("5d", "5m"),
+    "1 month (1d)": ("1mo", "1d"),
+    "1 year (1d)": ("1y", "1d")
+}
+
+choice = st.sidebar.selectbox("Horizon", list(horizon_options.keys()), index=0)
+selected_period, selected_interval = horizon_options[choice]
 
 # 3. Data Engine
-def get_live_data(ticker, pd_val):
-    interval_map = {"1d": "1m", "5d": "5m", "1mo": "1d", "1y": "1d"}
+def get_live_data(ticker, pd_val, int_val):
     try:
-        data = yf.download(ticker, period=pd_val, interval=interval_map[pd_val], progress=False)
-        if pd_val == "1d" and (data is None or len(data) < 5):
-            data = yf.download(ticker, period="4d", interval="1m", progress=False)
-            if not data.empty:
-                last_date = data.index[-1].date()
-                data = data[data.index.date == last_date]
-        if data.empty: return None
+        data = yf.download(ticker, period=pd_val, interval=int_val, progress=False)
+        
+        # Clean Multi-index columns if they exist
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
+            
+        if data.empty: return None
         return data
-    except: return None
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
+        return None
 
-df = get_live_data(symbol, period)
+df = get_live_data(symbol, selected_period, selected_interval)
 
-if df is None or len(df) < 15:
-    st.error("❌ Waiting for market data... Retrying soon.")
+if df is None or len(df) < 5:
+    st.error("❌ Waiting for market data or invalid ticker. Retrying...")
     time.sleep(5)
     st.rerun()
 else:
@@ -67,18 +78,22 @@ else:
     total_period_sell = df['Sell_Vol'].sum()
     total_period_vol = total_period_buy + total_period_sell
     
-    # Calculate percentage for the Horizontal Bar
+    # Sentiment Bar Percentage
     buy_percentage = (total_period_buy / total_period_vol * 100) if total_period_vol > 0 else 50
     sell_percentage = 100 - buy_percentage
 
-    # Target Logic
-    y_vals = df['Close'].tail(10).values.flatten()
-    x_vals = np.arange(10)
+    # --- Robust Target Logic ---
+    # We take the last 15 bars to predict the 16th bar
+    lookback = min(len(df), 15)
+    y_vals = df['Close'].tail(lookback).values.flatten().astype(float)
+    x_vals = np.arange(lookback)
+    
     slope, intercept = np.polyfit(x_vals, y_vals, 1)
-    raw_prediction = slope * 11 + intercept 
+    raw_prediction = slope * (lookback + 1) + intercept 
+    
     last_close = float(df['Close'].iloc[-1])
-    upper_circuit = round(last_close * 1.05, 2)
-    prediction = min(raw_prediction, upper_circuit)
+    # Constraints: Limit prediction to a realistic 5% band
+    prediction = np.clip(raw_prediction, last_close * 0.95, last_close * 1.05)
 
     # --- 5. CHARTING ---
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
@@ -100,15 +115,15 @@ else:
     fig.add_trace(go.Bar(x=df.index, y=df['Sell_Vol'], name='Sell Vol', marker_color='#ef5350'), row=2, col=1)
     
     fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='magenta', width=2), name='RSI'), row=3, col=1)
+    
     fig.update_layout(height=700, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='stack', showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- 6. VISUAL VOLUME BAR (TUG OF WAR) ---
-    st.markdown(f"### 📊 Cumulative Volume Sentiment ({period})")
+    # --- 6. VISUAL VOLUME BAR ---
+    st.markdown(f"### 📊 Cumulative Volume Sentiment ({choice})")
     
-    # Custom HTML for Horizontal Sentiment Bar
     bar_html = f"""
-    <div style="width: 100%; background-color: #444; border-radius: 10px; display: flex; height: 30px; overflow: hidden; margin-bottom: 20px; border: 1px solid #666;">
+    <div style="width: 100%; background-color: #444; border-radius: 10px; display: flex; height: 35px; overflow: hidden; margin-bottom: 20px; border: 1px solid #666;">
         <div style="width: {buy_percentage}%; background-color: #26a69a; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 14px;">
             {buy_percentage:.1f}% BUY
         </div>
@@ -124,25 +139,21 @@ else:
     
     with c1:
         st.metric("Live Price", f"₹{last_close:.2f}")
-        st.metric("Target", f"₹{prediction:.2f}", f"{((prediction/last_close)-1)*100:.2f}%")
+        diff = ((prediction/last_close)-1)*100
+        st.metric("Target", f"₹{prediction:.2f}", f"{diff:+.2f}%")
 
     with c2:
-        total_v = current_buy_vol + current_sell_vol
-        b_pct = (current_buy_vol / total_v * 100) if total_v > 0 else 0
-        st.metric("Last Candle Buy", f"{b_pct:.1f}%", f"{current_buy_vol:,.0f}")
-        st.write(f"**Total Period Buy:**")
-        st.write(f"{total_period_buy:,.0f}")
+        st.metric("Total Buy Vol", f"{total_period_buy:,.0f}")
+        st.caption(f"Last Candle: {current_buy_vol:,.0f}")
         
     with c3:
-        s_pct = (current_sell_vol / total_v * 100) if total_v > 0 else 0
-        st.metric("Last Candle Sell", f"{s_pct:.1f}%", f"-{current_sell_vol:,.0f}", delta_color="inverse")
-        st.write(f"**Total Period Sell:**")
-        st.write(f"{total_period_sell:,.0f}")
+        st.metric("Total Sell Vol", f"{total_period_sell:,.0f}", delta_color="inverse")
+        st.caption(f"Last Candle: -{current_sell_vol:,.0f}")
         
     with c4:
-        st.info(f"RSI: {df['RSI'].iloc[-1]:.1f}")
-        st.write(f"📊 **Total Period Vol:**")
+        st.write(f"📊 **Total Period Vol ({choice})**")
         st.subheader(f"{total_period_vol:,.0f}")
+        st.info(f"RSI: {df['RSI'].iloc[-1]:.1f}")
 
     # --- 8. COUNTDOWN ---
     for i in range(refresh_rate, -1, -1):
