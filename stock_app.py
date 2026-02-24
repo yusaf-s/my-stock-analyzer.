@@ -15,7 +15,7 @@ st.set_page_config(layout="wide", page_title="India Alpha: Silverline Ultimate")
 # --- AUTO-REFRESH CONFIG ---
 refresh_rate = 30
 
-# 1. Header
+# 1. Header & IST Setup
 IST = pytz.timezone('Asia/Kolkata')
 current_time = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
 st.title("🚀 India Alpha: Silverline Ultimate Tracker")
@@ -32,6 +32,7 @@ def get_live_data(ticker, pd_val):
     interval_map = {"1d": "1m", "5d": "5m", "1mo": "1d", "1y": "1d"}
     try:
         data = yf.download(ticker, period=pd_val, interval=interval_map[pd_val], progress=False)
+        # Fallback if 1d data is thin
         if pd_val == "1d" and (data is None or len(data) < 5):
             data = yf.download(ticker, period="4d", interval="1m", progress=False)
             if not data.empty:
@@ -45,7 +46,7 @@ def get_live_data(ticker, pd_val):
 
 df = get_live_data(symbol, period)
 
-if df is None or len(df) < 15:
+if df is None or len(df) < 10:
     st.error("❌ Waiting for market data... Retrying soon.")
     time.sleep(5)
     st.rerun()
@@ -59,26 +60,32 @@ else:
     df['Buy_Vol'] = df['Volume'] * (df['Close'] - df['Low']) / df['Range']
     df['Sell_Vol'] = df['Volume'] * (df['High'] - df['Close']) / df['Range']
     
+    # Current (Last Candle)
     current_buy_vol = float(df['Buy_Vol'].iloc[-1])
     current_sell_vol = float(df['Sell_Vol'].iloc[-1])
     
-    # Period Aggregates
+    # Period Totals (Requested: Full Volume Sum)
     total_period_buy = df['Buy_Vol'].sum()
     total_period_sell = df['Sell_Vol'].sum()
     total_period_vol = total_period_buy + total_period_sell
     
-    # Calculate percentage for the Horizontal Bar
-    buy_percentage = (total_period_buy / total_period_vol * 100) if total_period_vol > 0 else 50
-    sell_percentage = 100 - buy_percentage
+    # Percentage for Sentiment Bar
+    buy_pct_total = (total_period_buy / total_period_vol * 100) if total_period_vol > 0 else 50
+    sell_pct_total = 100 - buy_pct_total
 
-    # Target Logic
-    y_vals = df['Close'].tail(10).values.flatten()
-    x_vals = np.arange(10)
-    slope, intercept = np.polyfit(x_vals, y_vals, 1)
-    raw_prediction = slope * 11 + intercept 
+    # --- UPDATED ROBUST TARGET LOGIC ---
     last_close = float(df['Close'].iloc[-1])
-    upper_circuit = round(last_close * 1.05, 2)
-    prediction = min(raw_prediction, upper_circuit)
+    recent_prices = df['Close'].tail(15).dropna().values.flatten().astype(float)
+    
+    if len(recent_prices) > 5:
+        x_vals = np.arange(len(recent_prices))
+        slope, intercept = np.polyfit(x_vals, recent_prices, 1)
+        # Predict 2 steps ahead for better visibility
+        raw_prediction = slope * (len(recent_prices) + 2) + intercept 
+        # Constraint: Max 5% move from current price (Circuit limit logic)
+        prediction = np.clip(raw_prediction, last_close * 0.95, last_close * 1.05)
+    else:
+        prediction = last_close
 
     # --- 5. CHARTING ---
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
@@ -104,45 +111,41 @@ else:
     st.plotly_chart(fig, use_container_width=True)
 
     # --- 6. VISUAL VOLUME BAR (TUG OF WAR) ---
-    st.markdown(f"### 📊 Cumulative Volume Sentiment ({period})")
+    st.markdown(f"### 📊 Cumulative Sentiment Bar ({period})")
     
-    # Custom HTML for Horizontal Sentiment Bar
     bar_html = f"""
-    <div style="width: 100%; background-color: #444; border-radius: 10px; display: flex; height: 30px; overflow: hidden; margin-bottom: 20px; border: 1px solid #666;">
-        <div style="width: {buy_percentage}%; background-color: #26a69a; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 14px;">
-            {buy_percentage:.1f}% BUY
+    <div style="width: 100%; background-color: #444; border-radius: 8px; display: flex; height: 35px; overflow: hidden; border: 1px solid #555;">
+        <div style="width: {buy_pct_total}%; background-color: #26a69a; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold;">
+            {buy_pct_total:.1f}% BUY
         </div>
-        <div style="width: {sell_percentage}%; background-color: #ef5350; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 14px;">
-            {sell_percentage:.1f}% SELL
+        <div style="width: {sell_pct_total}%; background-color: #ef5350; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold;">
+            {sell_pct_total:.1f}% SELL
         </div>
     </div>
     """
     st.markdown(bar_html, unsafe_allow_html=True)
+    st.markdown("---")
 
     # --- 7. DASHBOARD METRICS ---
     c1, c2, c3, c4 = st.columns(4)
     
     with c1:
         st.metric("Live Price", f"₹{last_close:.2f}")
-        st.metric("Target", f"₹{prediction:.2f}", f"{((prediction/last_close)-1)*100:.2f}%")
+        change_pct = ((prediction / last_close) - 1) * 100
+        st.metric("Target Price", f"₹{prediction:.2f}", f"{change_pct:+.2f}%")
 
     with c2:
-        total_v = current_buy_vol + current_sell_vol
-        b_pct = (current_buy_vol / total_v * 100) if total_v > 0 else 0
-        st.metric("Last Candle Buy", f"{b_pct:.1f}%", f"{current_buy_vol:,.0f}")
-        st.write(f"**Total Period Buy:**")
-        st.write(f"{total_period_buy:,.0f}")
+        st.metric("Period Buy Vol", f"{total_period_buy:,.0f}")
+        st.caption(f"Last Candle: {current_buy_vol:,.0f}")
         
     with c3:
-        s_pct = (current_sell_vol / total_v * 100) if total_v > 0 else 0
-        st.metric("Last Candle Sell", f"{s_pct:.1f}%", f"-{current_sell_vol:,.0f}", delta_color="inverse")
-        st.write(f"**Total Period Sell:**")
-        st.write(f"{total_period_sell:,.0f}")
+        st.metric("Period Sell Vol", f"-{total_period_sell:,.0f}", delta_color="inverse")
+        st.caption(f"Last Candle: {current_sell_vol:,.0f}")
         
     with c4:
-        st.info(f"RSI: {df['RSI'].iloc[-1]:.1f}")
-        st.write(f"📊 **Total Period Vol:**")
+        st.write("**Total Period Vol**")
         st.subheader(f"{total_period_vol:,.0f}")
+        st.info(f"RSI: {df['RSI'].iloc[-1]:.1f}")
 
     # --- 8. COUNTDOWN ---
     for i in range(refresh_rate, -1, -1):
