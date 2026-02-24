@@ -57,12 +57,20 @@ else:
 
     epsilon = 0.00001
     df['Range'] = (df['High'] - df['Low']) + epsilon
+    # Calculating Buy/Sell Volume based on price action within the candle
     df['Buy_Vol'] = df['Volume'] * (df['Close'] - df['Low']) / df['Range']
     df['Sell_Vol'] = df['Volume'] * (df['High'] - df['Close']) / df['Range']
     
+    # Current (Last Candle) Metrics
     current_buy_vol = float(df['Buy_Vol'].iloc[-1])
     current_sell_vol = float(df['Sell_Vol'].iloc[-1])
+    
+    # Period Aggregates (Sum of all candles in the current view)
+    total_period_buy = df['Buy_Vol'].sum()
+    total_period_sell = df['Sell_Vol'].sum()
+    total_period_vol = df['Volume'].sum()
 
+    # Simple Linear Regression for Target Prediction
     y_vals = df['Close'].tail(10).values.flatten()
     x_vals = np.arange(10)
     slope, intercept = np.polyfit(x_vals, y_vals, 1)
@@ -76,6 +84,7 @@ else:
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
                         vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
 
+    # Price Candle
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'],
                                  low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
 
@@ -83,6 +92,7 @@ else:
     last_rsi = df['RSI'].iloc[-1]
     star_color = "red" if last_rsi > 85 else "yellow"
     
+    # Target Marker
     fig.add_trace(go.Scatter(
         x=[last_time], y=[prediction],
         mode='markers+text',
@@ -92,9 +102,11 @@ else:
         name='Target'
     ), row=1, col=1)
 
+    # Volume Bars
     fig.add_trace(go.Bar(x=df.index, y=df['Buy_Vol'], name='Buy Vol', marker_color='#26a69a'), row=2, col=1)
     fig.add_trace(go.Bar(x=df.index, y=df['Sell_Vol'], name='Sell Vol', marker_color='#ef5350'), row=2, col=1)
     
+    # RSI
     fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='magenta', width=2), name='RSI'), row=3, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
@@ -117,20 +129,22 @@ else:
     with c2:
         total_v = current_buy_vol + current_sell_vol
         b_pct = (current_buy_vol / total_v * 100) if total_v > 0 else 0
-        st.metric("Buy Vol", f"{b_pct:.1f}%", f"{current_buy_vol:,.0f}")
+        st.metric("Last Buy Vol", f"{b_pct:.1f}%", f"{current_buy_vol:,.0f}")
+        st.caption(f"Total {period} Buy: **{total_period_buy:,.0f}**")
         
     with c3:
         s_pct = (current_sell_vol / total_v * 100) if total_v > 0 else 0
-        st.metric("Sell Vol", f"{s_pct:.1f}%", f"-{current_sell_vol:,.0f}", delta_color="inverse")
+        st.metric("Last Sell Vol", f"{s_pct:.1f}%", f"-{current_sell_vol:,.0f}", delta_color="inverse")
+        st.caption(f"Total {period} Sell: **{total_period_sell:,.0f}**")
         
     with c4:
         vol_state = "🚀 STRONG VOL" if df['Volume'].iloc[-1] > df['Vol_SMA'].iloc[-1] else "😴 LOW VOL"
         st.info(f"Signal: {vol_state}")
+        st.write(f"📊 **Total Period Vol:**")
+        st.subheader(f"{total_period_vol:,.0f}")
 
     # --- 7. COUNTDOWN TIMER LOGIC ---
     for i in range(refresh_rate, -1, -1):
         timer_placeholder.markdown(f"⏳ **Next Refresh in:** `{i}s`")
         time.sleep(1)
-        
     st.rerun()
-    
