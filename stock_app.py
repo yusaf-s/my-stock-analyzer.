@@ -106,15 +106,19 @@ else:
     for label, (p, i, count) in tf_configs.items():
         b, s = get_volume_stats(symbol, p, i, count)
         total = b + s
-        ratio = (b / total * 100) if total > 0 else 50
+        buy_ratio = (b / total * 100) if total > 0 else 50
+        sell_ratio = 100 - buy_ratio
+        
         vol_rows.append({
             "Timeframe": label,
             "Buy Volume": f"{b:,.0f}",
             "Sell Volume": f"{s:,.0f}",
-            "Buy %": f"{ratio:.1f}%",
-            "Net Flow": f"{'🟢' if b > s else '🔴'} {(b-s):,.0f}"
+            "Buy %": f"🟢 {buy_ratio:.1f}%",
+            "Sell %": f"🔴 {sell_ratio:.1f}%",
+            "Net Flow": f"{'✅' if b > s else '⚠️'} {(b-s):,.0f}"
         })
     
+    # Display table with full width
     st.table(pd.DataFrame(vol_rows))
 
     # --- 6. TARGET CALCULATIONS ---
@@ -152,7 +156,8 @@ else:
     # --- 8. FOOTER METRICS ---
     total_period_buy = df['Buy_Vol'].sum()
     total_period_sell = df['Sell_Vol'].sum()
-    buy_pct_total = (total_period_buy / (total_period_buy + total_period_sell) * 100) if (total_period_buy + total_period_sell) > 0 else 50
+    total_vol = total_period_buy + total_period_sell
+    buy_pct_total = (total_period_buy / total_vol * 100) if total_vol > 0 else 50
     sell_pct_total = 100 - buy_pct_total
 
     st.markdown(f"### 📊 Overall Period Sentiment")
